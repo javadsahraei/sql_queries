@@ -1,0 +1,138 @@
+------ RFM Analysis
+-- All buying customers in 1401
+drop table if exists #customers_sales
+select
+    dt.YearMonth
+    , cts.CustomerID
+    , cbt.business_type
+    , sum(cts.NMV_Fcast) NMV_Fcast
+    , sum(cts.NetItem_Fcast) NetItem_Fcast
+into #customers_sales
+from
+    DWSNDigiKala.Sales.CartToShipTable cts
+    join DWSNDigiKala.dbo.vwDateAll dt on dt.DateId = cts.CartFinalizeDateId
+    join DWSNDigiKala.Sales.DimCustomerBusinessType cbt on cbt.business_type_id = cts.customer_business_type
+where
+    cts.DigiStatus = 70
+    and dt.PersianYear = 1401
+    and cts.site_id = 1
+group by
+    dt.YearMonth
+    , cts.CustomerID
+    , cbt.business_type
+
+-- All customer's RFM Status in 1401 (Based on RFM Table)
+drop table if exists #customers_RFM_ALL
+select distinct
+    rfm.CustomerID
+    , dt.YearMonth
+    , rc.RFM_Category_Title
+into #customers_RFM_ALL
+from
+    DWSNDigiKala.customer.RFM rfm
+    join DWSNDigiKala.dbo.vwDateAll dt on dt.DateId =rfm.DateId
+    join DWSNDigiKala.customer.RFM_Categories rc on rc.RFM_Category_Id = rfm.RFM_Category_Id
+where
+    dt.PersianYear = 1401
+
+
+-- Finding buying customers that don't have data in RFM
+drop table if exists #lost_customers
+select
+    distinct
+    cs.CustomerID
+into #lost_customers
+--     , cs.business_type
+from
+    #customers_sales cs
+    left join #customers_RFM_ALL cRA on cs.CustomerID = cRA.CustomerID and cs.YearMonth = cra.YearMonth
+where cra.CustomerID is null
+
+-- count of lost customers
+select count(*)
+from #lost_customers lc
+
+
+-- Count of customers in Merged Accounts
+select count(CustomerID)
+from (
+    select
+        distinct
+            lc.CustomerID
+           , ma.main_user_id
+    from
+         #lost_customers lc
+         left join ODSDigikala.digikala.merged_accounts ma on ma.duplicated_user_id = lc.CustomerID
+    where ma.main_user_id is not null
+    ) as x
+
+-- Count of customers in Merged Accounts that don't have RFM data
+select count(CustomerID)
+from (
+    select
+        distinct
+            lc.CustomerID
+           , ma.main_user_id
+    from
+         #lost_customers lc
+         left join ODSDigikala.digikala.merged_accounts ma on ma.duplicated_user_id = lc.CustomerID
+         left join #customers_RFM_ALL rfm on rfm.CustomerID = ma.main_user_id
+
+    where
+          ma.main_user_id is not null
+        and rfm.CustomerID is  null
+    ) as x
+
+-- Founded data in merged accounts
+drop table if exists #found_with_merged_accounts
+select
+        distinct
+            lc.CustomerID lost_customer_id
+           , ma.main_user_id
+    , rfm.YearMonth
+    , rfm.RFM_Category_Title
+into #found_with_merged_accounts
+from
+         #lost_customers lc
+         join ODSDigikala.digikala.merged_accounts ma on ma.duplicated_user_id = lc.CustomerID
+         join #customers_RFM_ALL rfm on rfm.CustomerID = ma.main_user_id
+where
+          ma.main_user_id is not null
+        and rfm.CustomerID is not null
+
+drop table if exists #cleansed_data
+select distinct
+    cs.business_type
+        , cs.YearMonth
+        , cs.CustomerID
+        , cs.NMV_Fcast
+        , cs.NetItem_Fcast
+        , COALESCE(cRA.RFM_Category_Title, fwma.RFM_Category_Title, null) RFM_Category_Title
+
+into #cleansed_data
+from
+    #customers_sales cs
+    left join #customers_RFM_ALL cRA on cs.CustomerID = cRA.CustomerID and cs.YearMonth = cra.YearMonth
+    left join #found_with_merged_accounts fwma on cs.YearMonth = fwma.YearMonth and cs.CustomerID = fwma.lost_customer_id
+
+select
+    cd.YearMonth
+    ,
+  cd.business_type
+    , cd.RFM_Category_Title
+    , sum(cd.NetItem_Fcast) NetItem_Fcast
+    , sum(cd.NMV_Fcast) NMV_Fcast
+    , count(distinct cd.CustomerID) customer_count
+from #cleansed_data cd
+where cd.business_type = 'b2c'
+group by
+    cd.YearMonth
+    ,
+         cd.business_type
+    , cd.RFM_Category_Title
+
+select sum(cd.NMV_Fcast) from #cleansed_data cd
+
+
+
+

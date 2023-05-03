@@ -1,0 +1,79 @@
+DROP TABLE IF EXISTS #customers
+SELECT
+	ctst.CustomerID
+    , ctst.ID_Order
+	, CASE WHEN ps.id IN (366, 367) THEN 1 ELSE 0 END AS has_BNPL
+	, CASE WHEN ps.id IN (315) THEN 1 ELSE 0 END AS has_loan
+INTO #customers
+FROM 
+	DWSNDigiKala.Sales.CartToShipTable ctst
+	JOIN DWSNDigiKala.dbo.vwDateAll da ON da.DateId = ctst.CartFinalizeDateId
+	JOIN ODSDigikala.digikala.orders o ON o.id = ctst.ID_Order
+	JOIN ODSDigikala.digikala.payment_methods pm ON pm.id = o.payment_method_id
+	JOIN ODSDigikala.digikala.payments p ON p.order_id = o.id
+	JOIN ODSDigikala.digikala.payment_sources ps ON ps.id = p.payment_source_id
+WHERE
+	ctst.DigiStatus IN (40, 50, 70)
+	AND da.PersianYear >= 1400
+	AND ctst.NMV_3 > 0
+    and ps.id in (315,366, 367)
+GROUP BY
+	ctst.CustomerID
+    , ctst.ID_Order
+	, CASE WHEN ps.id IN (366, 367) THEN 1 ELSE 0 END
+	, CASE WHEN ps.id IN (315) THEN 1 ELSE 0 END
+
+drop table if exists #first_order_BNPL
+SELECT
+    c.CustomerID
+    , min(c.ID_Order) first_order_with_BNPL
+into #first_order_BNPL
+from #customers c
+where
+    c.has_BNPL = 1
+group by
+        c.CustomerID
+
+DROP table if exists #customer_behavior
+SELECT
+    cts.CustomerID
+    , dt.DateString
+    , cts.ID_Order
+    , case when cts.ID_Order < fo.first_order_with_BNPL then 'before_BNPL' else 'after_BNPL' end as order_period
+    , sum(cts.NMV_Fcast) NMV_Fcast
+    , sum(cts.NetItem_Fcast) NetItem_Fcast
+into #customer_behavior
+FROM
+    DWSNDigiKala.Sales.CartToShipTable cts
+    join DWSNDigiKala.dbo.vwDateAll dt on dt.dateid = cts.CartFinalizeDateId
+    join #first_order_BNPL fo on fo.CustomerID = cts.CustomerID --and fo.first_order_with_BNPL > cts.ID_Order
+where
+    cts.DigiStatus in (40,50,70)
+    and dt.PersianYear >= 1400
+--     and cts.CustomerID > 466153
+group by
+        cts.CustomerID
+    , dt.DateString
+    , cts.ID_Order
+    , case when cts.ID_Order < fo.first_order_with_BNPL then 'before_BNPL' else 'after_BNPL' end
+order by
+    CustomerID, DateString ASC
+
+select
+    x.order_period
+--     , count(distinct x.CustomerID) customer_count
+    , avg(x.order_frequency)  avg_order_frequency
+    , avg(x.AOV) avg_AOV
+    , avg(x.AOI) avg_AOI
+from (select cb.CustomerID
+           , cb.order_period
+           , DATEDIFF(day, min(cb.DateString), max(cb.DateString)) * 1.0  / count(cb.ID_Order) as order_frequency
+            , sum(cb.NMV_Fcast) / count(cb.ID_Order) AOV
+            , sum(cb.NetItem_Fcast) / count(cb.ID_Order) AOI
+      from #customer_behavior cb
+      group by cb.CustomerID
+             , cb.order_period) as x
+group by
+        x.order_period
+
+
